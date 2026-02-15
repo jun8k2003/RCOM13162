@@ -1,0 +1,13 @@
+syntax = "proto3";
+option csharp_namespace = "RCOM.Channel.Proto";
+
+service Broker {
+    // 双方向ストリーミングで常時接続
+    rpc Connect(stream Message) returns (stream Message);
+}
+
+message Message {
+    string matching_key = 1;   // ルーム識別子（GUID）
+    string payload      = 2;   // JSON-RPC 2.0フォーマットのJSON文字列
+    string message_id   = 3;   // メッセージ識別子
+}
