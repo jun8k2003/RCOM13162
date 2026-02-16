@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using RCOM.Channel;
 
 namespace RCOM.Rpc
@@ -20,9 +21,16 @@ namespace RCOM.Rpc
             _pending = new ConcurrentDictionary<string, TaskCompletionSource<JsonRpcResponse>>();
 
         /// <summary>
-        /// 相手からの一方向通知（Notification）受信イベント。
+        /// 相手からのリクエスト受信ハンドラ。
+        /// method と params を受け取り、戻り値が JSON-RPC Response として自動返送される。
         /// </summary>
-        public event Action<JsonRpcResponse> OnNotificationReceived;
+        public Func<string, JToken, Task<object>> OnRequest { get; set; }
+
+        /// <summary>
+        /// 相手からの一方向通知受信ハンドラ。
+        /// method と params を受け取る（応答は返さない）。
+        /// </summary>
+        public Action<string, JToken> OnNotify { get; set; }
 
         /// <summary>
         /// IRoomChannel を直接指定して生成する（テスト用）。
@@ -30,7 +38,7 @@ namespace RCOM.Rpc
         public RemotePeer(IRoomChannel channel)
         {
             _channel = channel;
-            _channel.OnReceived += OnReceived;
+            _channel.OnReceived = OnReceived;
         }
 
         /// <summary>
@@ -53,12 +61,12 @@ namespace RCOM.Rpc
         }
 
         /// <summary>
-        /// リモートメソッドを呼び出し、レスポンスを非同期で待つ。
+        /// リモートメソッドを呼び出し、レスポンスを非同期で待つ（JSON-RPC Request）。
         /// </summary>
         /// <param name="method">メソッド名</param>
         /// <param name="params">パラメータ（null 可）</param>
         /// <param name="timeout">タイムアウト（省略時 30 秒）</param>
-        public System.Threading.Tasks.Task<JsonRpcResponse> CallAsync(
+        public Task<JsonRpcResponse> CallAsync(
             string method,
             object @params = null,
             TimeSpan timeout = default)
@@ -98,32 +106,112 @@ namespace RCOM.Rpc
             }).Unwrap();
         }
 
+        /// <summary>
+        /// 相手に一方向通知を送信する（JSON-RPC Notification、id なし、応答なし）。
+        /// </summary>
+        /// <param name="method">メソッド名</param>
+        /// <param name="params">パラメータ（null 可）</param>
+        public Task NotifyAsync(string method, object @params = null)
+        {
+            var notification = JsonConvert.SerializeObject(new
+            {
+                jsonrpc = "2.0",
+                method,
+                @params
+            });
+
+            return _channel.SendAsync(notification);
+        }
+
         private void OnReceived(string json)
         {
-            JsonRpcResponse response;
+            JsonRpcMessage message;
             try
             {
-                response = JsonConvert.DeserializeObject<JsonRpcResponse>(json);
+                message = JsonConvert.DeserializeObject<JsonRpcMessage>(json);
             }
             catch
             {
                 return;
             }
 
-            if (response == null) return;
+            if (message == null) return;
 
-            if (response.Id != null && _pending.TryRemove(response.Id, out var tcs))
+            if (message.IsRequest)
             {
-                // リクエストへのレスポンスとして解決
-                if (response.Error != null)
-                    tcs.TrySetException(new RpcException(response.Error));
+                // 相手からのリクエストまたは通知
+                if (message.IsNotification)
+                {
+                    // Notification（id なし）→ OnNotify
+                    OnNotify?.Invoke(message.Method, message.Params);
+                }
                 else
-                    tcs.TrySetResult(response);
+                {
+                    // Request（id あり）→ OnRequest → 応答を自動返送
+                    HandleRequestAsync(message);
+                }
             }
             else
             {
-                // 相手からの Notification（一方向通知）
-                OnNotificationReceived?.Invoke(response);
+                // 自分が送った CallAsync へのレスポンス
+                if (message.Id != null && _pending.TryRemove(message.Id, out var tcs))
+                {
+                    if (message.Error != null)
+                        tcs.TrySetException(new RpcException(message.Error));
+                    else
+                    {
+                        var response = new JsonRpcResponse
+                        {
+                            JsonRpc = message.JsonRpc,
+                            Id = message.Id,
+                            Result = message.Result,
+                            Error = message.Error
+                        };
+                        tcs.TrySetResult(response);
+                    }
+                }
+            }
+        }
+
+        private async void HandleRequestAsync(JsonRpcMessage request)
+        {
+            var handler = OnRequest;
+            if (handler == null) return;
+
+            try
+            {
+                var result = await handler(request.Method, request.Params);
+
+                var response = JsonConvert.SerializeObject(new
+                {
+                    jsonrpc = "2.0",
+                    id = request.Id,
+                    result
+                });
+
+                await _channel.SendAsync(response);
+            }
+            catch (RpcException ex)
+            {
+                var errorResponse = JsonConvert.SerializeObject(new
+                {
+                    jsonrpc = "2.0",
+                    id = request.Id,
+                    error = new { code = ex.RpcError.Code, message = ex.RpcError.Message, data = ex.RpcError.Data }
+                });
+
+                await _channel.SendAsync(errorResponse);
+            }
+            catch (Exception ex)
+            {
+                var errorResponse = JsonConvert.SerializeObject(new
+                {
+                    jsonrpc = "2.0",
+                    id = request.Id,
+                    error = new { code = -32603, message = ex.Message }
+                });
+
+                await _channel.SendAsync(errorResponse);
             }
         }
 
@@ -144,6 +232,12 @@ namespace RCOM.Rpc
             : base(string.Format("[{0}] {1}", error.Code, error.Message))
         {
             RpcError = error;
+        }
+
+        public RpcException(int code, string message)
+            : base(string.Format("[{0}] {1}", code, message))
+        {
+            RpcError = new JsonRpcError { Code = code, Message = message };
         }
     }
 }

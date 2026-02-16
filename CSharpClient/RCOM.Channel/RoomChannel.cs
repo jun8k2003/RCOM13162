@@ -19,9 +19,9 @@ namespace RCOM.Channel
         private CancellationTokenSource _cts;
 
         /// <summary>
-        /// メッセージ受信イベント。受信した payload（JSON 文字列）を通知する。
+        /// メッセージ受信ハンドラ。受信した payload（JSON 文字列）を通知する。
         /// </summary>
-        public event Action<string> OnReceived;
+        public Action<string> OnReceived { get; set; }
 
         private RoomChannel(string matchingKey, ChannelMode mode, Grpc.Core.Channel grpcChannel)
         {

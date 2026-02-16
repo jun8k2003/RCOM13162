@@ -30,6 +30,10 @@ public class RemotePeerTests
         _peer.Dispose();
     }
 
+    // ────────────────────────────────────────────
+    // CallAsync（リクエスト送信）
+    // ────────────────────────────────────────────
+
     /// <summary>
     /// CallAsync が JSON-RPC 2.0 フォーマット（jsonrpc, id, method, params）で
     /// リクエストを送信し、レスポンスを正しく受け取ることを検証する。
@@ -143,48 +147,6 @@ public class RemotePeerTests
     }
 
     /// <summary>
-    /// id を持たないメッセージ（JSON-RPC 2.0 の Notification）を受信した場合、
-    /// OnNotificationReceived イベントが発火し、内容が正しく渡されることを検証する。
-    /// </summary>
-    [TestMethod]
-    public void OnNotificationReceived_FiresForMessagesWithoutMatchingId()
-    {
-        // Arrange
-        JsonRpcResponse? received = null;
-        _peer.OnNotificationReceived += (response) => received = response;
-
-        // Act: id が null の通知を送信
-        _mockChannel.SimulateReceive(JsonConvert.SerializeObject(new
-        {
-            jsonrpc = "2.0",
-            result = new { notify = "hello" }
-        }));
-
-        // Assert
-        Assert.IsNotNull(received);
-        Assert.IsNull(received!.Id);
-        Assert.AreEqual("hello", received.Result?["notify"]?.ToString());
-    }
-
-    /// <summary>
-    /// 不正な JSON 文字列を受信した場合、例外がスローされず、
-    /// イベントも発火しないことを検証する（静かに無視される）。
-    /// </summary>
-    [TestMethod]
-    public void OnReceived_IgnoresInvalidJson()
-    {
-        // Arrange
-        var notificationFired = false;
-        _peer.OnNotificationReceived += (_) => notificationFired = true;
-
-        // Act: 不正な JSON を送信
-        _mockChannel.SimulateReceive("this is not json");
-
-        // Assert: 例外もイベントも発生しない
-        Assert.IsFalse(notificationFired);
-    }
-
-    /// <summary>
     /// チャネルの SendAsync が失敗した場合、
     /// その例外が CallAsync の呼び出し元に伝播することを検証する。
     /// </summary>
@@ -198,18 +160,6 @@ public class RemotePeerTests
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(
             () => _peer.CallAsync("anyMethod"));
         Assert.AreEqual("Connection lost", ex.Message);
-    }
-
-    /// <summary>
-    /// Dispose を呼び出すと、内部の IRoomChannel も Dispose されることを検証する。
-    /// </summary>
-    [TestMethod]
-    public void Dispose_DisposesUnderlyingChannel()
-    {
-        // Act
-        _peer.Dispose();
-
-        // Assert: MockRoomChannel.Dispose が呼ばれている（例外なく完了する）
     }
 
     /// <summary>
@@ -245,5 +195,205 @@ public class RemotePeerTests
             }));
         }
         await Task.WhenAll(call1, call2, call3);
+    }
+
+    // ────────────────────────────────────────────
+    // NotifyAsync（一方向通知送信）
+    // ────────────────────────────────────────────
+
+    /// <summary>
+    /// NotifyAsync が JSON-RPC 2.0 Notification フォーマット（id なし）で
+    /// メッセージを送信することを検証する。
+    /// </summary>
+    [TestMethod]
+    public async Task NotifyAsync_SendsJsonRpc20NotificationWithoutId()
+    {
+        // Act
+        await _peer.NotifyAsync("logEvent", new { level = "info" });
+
+        // Assert
+        Assert.HasCount(1, _mockChannel.SentMessages);
+
+        var sent = JObject.Parse(_mockChannel.SentMessages[0]);
+        Assert.AreEqual("2.0", sent["jsonrpc"]?.ToString());
+        Assert.AreEqual("logEvent", sent["method"]?.ToString());
+        Assert.IsNull(sent["id"]);
+        Assert.AreEqual("info", sent["params"]?["level"]?.ToString());
+    }
+
+    // ────────────────────────────────────────────
+    // OnRequest（リクエスト受信 → 応答自動返送）
+    // ────────────────────────────────────────────
+
+    /// <summary>
+    /// 相手からの JSON-RPC Request を受信すると OnRequest が呼ばれ、
+    /// 戻り値が JSON-RPC Response として自動返送されることを検証する。
+    /// </summary>
+    [TestMethod]
+    public async Task OnRequest_HandlesIncomingRequestAndSendsResponse()
+    {
+        // Arrange
+        _peer.OnRequest = (method, @params) =>
+        {
+            if (method == "Add")
+            {
+                var a = @params["a"].Value<int>();
+                var b = @params["b"].Value<int>();
+                return Task.FromResult<object>(new { sum = a + b });
+            }
+            throw new RpcException(-32601, "Method not found");
+        };
+
+        // Act: 相手からのリクエストをシミュレート
+        _mockChannel.SimulateReceive(JsonConvert.SerializeObject(new
+        {
+            jsonrpc = "2.0",
+            id = "req-001",
+            method = "Add",
+            @params = new { a = 3, b = 5 }
+        }));
+
+        // async void のため少し待つ
+        await Task.Delay(50);
+
+        // Assert: レスポンスが送信されている
+        Assert.HasCount(1, _mockChannel.SentMessages);
+
+        var response = JObject.Parse(_mockChannel.SentMessages[0]);
+        Assert.AreEqual("2.0", response["jsonrpc"]?.ToString());
+        Assert.AreEqual("req-001", response["id"]?.ToString());
+        Assert.AreEqual(8, response["result"]?["sum"]?.Value<int>());
+        Assert.IsNull(response["error"]);
+    }
+
+    /// <summary>
+    /// OnRequest ハンドラが RpcException をスローした場合、
+    /// JSON-RPC Error Response が自動返送されることを検証する。
+    /// </summary>
+    [TestMethod]
+    public async Task OnRequest_SendsErrorResponseOnRpcException()
+    {
+        // Arrange
+        _peer.OnRequest = (method, @params) =>
+        {
+            throw new RpcException(-32601, "Method not found");
+        };
+
+        // Act
+        _mockChannel.SimulateReceive(JsonConvert.SerializeObject(new
+        {
+            jsonrpc = "2.0",
+            id = "req-002",
+            method = "Unknown"
+        }));
+
+        await Task.Delay(50);
+
+        // Assert
+        Assert.HasCount(1, _mockChannel.SentMessages);
+
+        var response = JObject.Parse(_mockChannel.SentMessages[0]);
+        Assert.AreEqual("req-002", response["id"]?.ToString());
+        Assert.AreEqual(-32601, response["error"]?["code"]?.Value<int>());
+        Assert.AreEqual("Method not found", response["error"]?["message"]?.ToString());
+    }
+
+    /// <summary>
+    /// OnRequest ハンドラが通常の例外をスローした場合、
+    /// JSON-RPC Internal Error (-32603) として返送されることを検証する。
+    /// </summary>
+    [TestMethod]
+    public async Task OnRequest_SendsInternalErrorOnGenericException()
+    {
+        // Arrange
+        _peer.OnRequest = (method, @params) =>
+        {
+            throw new InvalidOperationException("Something went wrong");
+        };
+
+        // Act
+        _mockChannel.SimulateReceive(JsonConvert.SerializeObject(new
+        {
+            jsonrpc = "2.0",
+            id = "req-003",
+            method = "Broken"
+        }));
+
+        await Task.Delay(50);
+
+        // Assert
+        Assert.HasCount(1, _mockChannel.SentMessages);
+
+        var response = JObject.Parse(_mockChannel.SentMessages[0]);
+        Assert.AreEqual("req-003", response["id"]?.ToString());
+        Assert.AreEqual(-32603, response["error"]?["code"]?.Value<int>());
+        Assert.AreEqual("Something went wrong", response["error"]?["message"]?.ToString());
+    }
+
+    // ────────────────────────────────────────────
+    // OnNotify（一方向通知受信）
+    // ────────────────────────────────────────────
+
+    /// <summary>
+    /// 相手からの JSON-RPC Notification（id なし、method あり）を受信した場合、
+    /// OnNotify ハンドラが呼ばれ、method と params が正しく渡されることを検証する。
+    /// </summary>
+    [TestMethod]
+    public void OnNotify_FiresForNotificationMessages()
+    {
+        // Arrange
+        string receivedMethod = null;
+        JToken receivedParams = null;
+        _peer.OnNotify = (method, @params) =>
+        {
+            receivedMethod = method;
+            receivedParams = @params;
+        };
+
+        // Act: id なし、method ありの通知を受信
+        _mockChannel.SimulateReceive(JsonConvert.SerializeObject(new
+        {
+            jsonrpc = "2.0",
+            method = "statusUpdate",
+            @params = new { status = "online" }
+        }));
+
+        // Assert
+        Assert.AreEqual("statusUpdate", receivedMethod);
+        Assert.AreEqual("online", receivedParams?["status"]?.ToString());
+    }
+
+    // ────────────────────────────────────────────
+    // エッジケース
+    // ────────────────────────────────────────────
+
+    /// <summary>
+    /// 不正な JSON 文字列を受信した場合、例外がスローされず、
+    /// ハンドラも呼ばれないことを検証する（静かに無視される）。
+    /// </summary>
+    [TestMethod]
+    public void OnReceived_IgnoresInvalidJson()
+    {
+        // Arrange
+        var notifyCalled = false;
+        _peer.OnNotify = (_, __) => notifyCalled = true;
+
+        // Act: 不正な JSON を送信
+        _mockChannel.SimulateReceive("this is not json");
+
+        // Assert: 例外もハンドラ呼び出しも発生しない
+        Assert.IsFalse(notifyCalled);
+    }
+
+    /// <summary>
+    /// Dispose を呼び出すと、内部の IRoomChannel も Dispose されることを検証する。
+    /// </summary>
+    [TestMethod]
+    public void Dispose_DisposesUnderlyingChannel()
+    {
+        // Act
+        _peer.Dispose();
+
+        // Assert: MockRoomChannel.Dispose が呼ばれている（例外なく完了する）
     }
 }

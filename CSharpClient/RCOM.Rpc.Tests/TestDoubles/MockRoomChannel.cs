@@ -19,9 +19,9 @@ namespace RCOM.Rpc.Tests.TestDoubles
         public IReadOnlyList<string> SentMessages => _sentMessages;
 
         /// <summary>
-        /// メッセージ受信イベント。
+        /// メッセージ受信ハンドラ。
         /// </summary>
-        public event Action<string>? OnReceived;
+        public Action<string> OnReceived { get; set; }
 
         /// <summary>
         /// SendAsync が呼ばれたときにスローする例外（null なら正常動作）。
