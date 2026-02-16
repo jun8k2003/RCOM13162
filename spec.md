@@ -32,7 +32,7 @@ RCOM is a remote communication framework inspired by the design philosophy of CO
 
 ```
 var channel = await PeerChannel.CreateAsync("your-matching-key-guid");
-channel.OnReceived += (message) => { /* 受信処理 */ };
+channel.OnReceived = (message) => { /* 受信処理 */ };
 await channel.SendAsync("Hello");
 ```
 
@@ -210,56 +210,122 @@ message Message {
 
 ### 3.4 シーケンス図
 
+アプリケーション A, B が Layer 2（RemotePeer）経由で通信する全体フローを示す。
+登場するクラスとその責務は以下のとおり。
+
+| 登場者 | 責務 |
+|---|---|
+| アプリ A / アプリ B | ユーザーのアプリケーションコード |
+| RemotePeer A / B | Layer 2 — JSON-RPC 2.0 の Request/Response 対管理 |
+| RoomChannel A / B | Layer 1 — gRPC 双方向ストリーミングの送受信 |
+| Broker サーバー | ルーム管理とメッセージ中継 |
+
+#### 接続フェーズ
+
 ```mermaid
 sequenceDiagram
-    box クライアントA側
-        participant CA as クライアントA
-        participant CSA as IClientStreamWriter
-    end
+    participant AA as App A
+    participant PA as RemotePeer A
+    participant CA as RoomChannel A
+    participant BK as Broker
+    participant CB as RoomChannel B
+    participant PB as RemotePeer B
+    participant AB as App B
 
-    box gRPCサーバー側
-        participant BS as BrokerService
-        participant RR as RoomRegistry
-        participant Room as Room
-    end
+    Note over AA,AB: 接続フェーズ
 
-    box クライアントB側
-        participant CSB as IServerStreamWriter
-        participant CB as クライアントB
-    end
+    AA->>PA: ConnectAsync(matchingKey, host, port)
+    PA->>CA: CreateAsync(matchingKey, Peer)
+    CA->>BK: gRPC Connect (matching-key, channel-mode=peer)
+    Note right of BK: Room作成, メンバーA登録
+    CA-->>PA: RoomChannel生成完了
+    PA-->>AA: RemotePeer生成完了
 
-    Note over CA,CB: 接続フェーズ
+    AB->>PB: ConnectAsync(matchingKey, host, port)
+    PB->>CB: CreateAsync(matchingKey, Peer)
+    CB->>BK: gRPC Connect (matching-key, channel-mode=peer)
+    Note right of BK: 同RoomにB登録 (マッチング成立)
+    CB-->>PB: RoomChannel生成完了
+    PB-->>AB: RemotePeer生成完了
+```
 
-    CA->>BS: Connect()<br/>header: matching-key = "guid-xxxx"
-    BS->>RR: Join("guid-xxxx", responseStreamA)
-    RR-->>BS: (room, memberIdA)
+#### リクエスト／レスポンスフェーズ（JSON-RPC 2.0）
 
-    CB->>BS: Connect()<br/>header: matching-key = "guid-xxxx"
-    BS->>RR: Join("guid-xxxx", responseStreamB)
-    RR-->>BS: (room, memberIdB)
+```mermaid
+sequenceDiagram
+    participant AA as App A
+    participant PA as RemotePeer A
+    participant CA as RoomChannel A
+    participant BK as Broker
+    participant CB as RoomChannel B
+    participant PB as RemotePeer B
+    participant AB as App B
 
-    Note over CA,CB: メッセージ送信フェーズ
+    Note over AA,AB: リクエスト / レスポンス (JSON-RPC 2.0)
 
-    CA->>CSA: WriteAsync(Message { Payload="Hello" })
-    CSA->>BS: requestStream経由で送信
-    BS->>BS: requestStream.ReadAllAsync()で受信
-    BS->>Room: BroadcastAsync(memberIdA, Message { Payload="Hello" })
-    Room->>Room: _members.Where(m => m.Key != memberIdA)
-    Room->>CSB: responseStreamB.WriteAsync(Message { Payload="Hello" })
-    CSB->>CB: responseStream.ReadAllAsync()で受信
+    AA->>PA: CallAsync("Add", {a:1, b:2})
+    Note left of PA: id発行, pending[id]=tcs
+    PA->>CA: SendAsync(JSON-RPC Request)
+    CA->>BK: Message { payload = JSON-RPC Request }
+    BK->>CB: BroadcastAsync (A以外に転送)
+    CB->>PB: OnReceived (内部転送)
+    PB->>AB: OnRequest (リクエスト受信)
 
-    Note over CA,CB: 切断フェーズ
+    AB->>PB: 処理結果を返送
+    PB->>CB: SendAsync(JSON-RPC Response)
+    CB->>BK: Message { payload = JSON-RPC Response }
+    BK->>CA: BroadcastAsync (B以外に転送)
+    CA->>PA: OnReceived (内部転送)
+    Note left of PA: pending[id]照合, tcs.SetResult
+    PA-->>AA: CallAsync完了 (Result = 3)
+```
 
-    CA->>BS: 切断
-    BS->>RR: Leave("guid-xxxx", memberIdA)
-    RR->>Room: room.Leave(memberIdA)
-    Room->>Room: IsEmpty? → false（Bがいる）
+#### 切断フェーズ
 
-    CB->>BS: 切断
-    BS->>RR: Leave("guid-xxxx", memberIdB)
-    RR->>Room: room.Leave(memberIdB)
-    Room->>Room: IsEmpty? → true
-    Room->>RR: _rooms.TryRemove("guid-xxxx")
+```mermaid
+sequenceDiagram
+    participant AA as App A
+    participant PA as RemotePeer A
+    participant CA as RoomChannel A
+    participant BK as Broker
+    participant CB as RoomChannel B
+    participant PB as RemotePeer B
+    participant AB as App B
+
+    Note over AA,AB: 切断フェーズ
+
+    AA->>PA: Dispose()
+    PA->>CA: Dispose()
+    CA->>BK: ストリーム切断
+    Note right of BK: メンバーA除去
+
+    AB->>PB: Dispose()
+    PB->>CB: Dispose()
+    CB->>BK: ストリーム切断
+    Note right of BK: メンバーB除去, Room空 -> 削除
+```
+
+#### NotifyAsync / OnNotify（一方向通知）
+
+```mermaid
+sequenceDiagram
+    participant AA as App A
+    participant PA as RemotePeer A
+    participant CA as RoomChannel A
+    participant BK as Broker
+    participant CB as RoomChannel B
+    participant PB as RemotePeer B
+    participant AB as App B
+
+    Note over AA,AB: 一方向通知 (JSON-RPC Notification)
+
+    AA->>PA: NotifyAsync("Log", {message: "hello"})
+    PA->>CA: SendAsync(JSON-RPC Notification)
+    CA->>BK: Message { payload = Notification, id なし }
+    BK->>CB: BroadcastAsync (A以外に転送)
+    CB->>PB: OnReceived (内部転送)
+    PB->>AB: OnNotify("Log", {message: "hello"})
+    Note right of AB: 応答なし
 ```
 
 ---
@@ -481,7 +547,7 @@ public class PeerChannel
     private AsyncDuplexStreamingCall<Message, Message>? _call;
 
     // 受信イベント
-    public event Action<string>? OnReceived;
+    public Action<string> OnReceived { get; set; }
 
     private PeerChannel(string matchingKey, string serverUrl)
     {
@@ -543,24 +609,31 @@ public class PeerChannel
 ### 5.3 RPC層（Layer2）サンプルコード
 
 JSON-RPC 2.0フォーマットによるRequest/Response対管理とタイムアウト制御。
+受信メッセージは `method` フィールドの有無でリクエスト/レスポンスを判別し、`id` フィールドの有無でリクエスト/通知を判別する。
 
 ```csharp
-public class RpcLayer
+public class RemotePeer
 {
-    private readonly PeerChannel _channel;
+    private readonly IRoomChannel _channel;
 
     // 送信中のリクエストをIDで管理
     private readonly ConcurrentDictionary<string, TaskCompletionSource<JsonRpcResponse>>
         _pending = new();
 
-    public RpcLayer(PeerChannel channel)
+    // 相手からのリクエスト受信ハンドラ（単一デリゲート）
+    public Func<string, JToken, Task<object>> OnRequest { get; set; }
+
+    // 相手からの一方向通知受信ハンドラ（単一デリゲート）
+    public Action<string, JToken> OnNotify { get; set; }
+
+    public RemotePeer(IRoomChannel channel)
     {
         _channel = channel;
-        _channel.OnReceived += OnReceived;
+        _channel.OnReceived = OnReceived;
     }
 
     /// <summary>
-    /// リモートメソッドを呼び出し、レスポンスを待つ。
+    /// リモートメソッドを呼び出し、レスポンスを待つ（JSON-RPC Request: id あり）。
     /// </summary>
     public async Task<JsonRpcResponse> CallAsync(
         string method,
@@ -571,8 +644,7 @@ public class RpcLayer
         var tcs = new TaskCompletionSource<JsonRpcResponse>();
         _pending[id] = tcs;
 
-        // JSON-RPC 2.0フォーマットでリクエストを送信
-        var request = JsonSerializer.Serialize(new
+        var request = JsonConvert.SerializeObject(new
         {
             jsonrpc = "2.0",
             id,
@@ -582,7 +654,6 @@ public class RpcLayer
 
         await _channel.SendAsync(request);
 
-        // タイムアウト管理
         var effectiveTimeout = timeout == default ? TimeSpan.FromSeconds(30) : timeout;
         using var cts = new CancellationTokenSource(effectiveTimeout);
         cts.Token.Register(() =>
@@ -594,60 +665,113 @@ public class RpcLayer
         return await tcs.Task;
     }
 
+    /// <summary>
+    /// 一方向通知を送信する（JSON-RPC Notification: id なし、応答なし）。
+    /// </summary>
+    public Task NotifyAsync(string method, object? @params = null)
+    {
+        var notification = JsonConvert.SerializeObject(new
+        {
+            jsonrpc = "2.0",
+            method,
+            @params
+        });
+
+        return _channel.SendAsync(notification);
+    }
+
     private void OnReceived(string json)
     {
-        var response = JsonSerializer.Deserialize<JsonRpcResponse>(json);
-        if (response == null) return;
+        var msg = JsonConvert.DeserializeObject<JsonRpcMessage>(json);
+        if (msg == null) return;
 
-        if (response.Id != null && _pending.TryRemove(response.Id, out var tcs))
+        if (msg.Method != null)
         {
-            // リクエストへのレスポンスとして解決
-            if (response.Error != null)
-                tcs.SetException(new RpcException(response.Error));
+            // method あり → リクエストまたは通知
+            if (msg.Id == null)
+                OnNotify?.Invoke(msg.Method, msg.Params);  // id なし → 通知
             else
-                tcs.SetResult(response);
+                HandleRequestAsync(msg);                     // id あり → リクエスト
         }
-        else
+        else if (msg.Id != null && _pending.TryRemove(msg.Id, out var tcs))
         {
-            // 相手からのNotification（一方向通知）
-            OnNotificationReceived?.Invoke(response);
+            // method なし → レスポンス（CallAsync の返信）
+            if (msg.Error != null)
+                tcs.SetException(new RpcException(msg.Error));
+            else
+                tcs.SetResult(new JsonRpcResponse { Id = msg.Id, Result = msg.Result });
         }
     }
 
-    public event Action<JsonRpcResponse>? OnNotificationReceived;
+    private async void HandleRequestAsync(JsonRpcMessage request)
+    {
+        try
+        {
+            var result = await OnRequest(request.Method, request.Params);
+            await _channel.SendAsync(JsonConvert.SerializeObject(new
+            {
+                jsonrpc = "2.0",
+                id = request.Id,
+                result
+            }));
+        }
+        catch (Exception ex)
+        {
+            await _channel.SendAsync(JsonConvert.SerializeObject(new
+            {
+                jsonrpc = "2.0",
+                id = request.Id,
+                error = new { code = -32603, message = ex.Message }
+            }));
+        }
+    }
 }
+```
 
-public class JsonRpcResponse
-{
-    public string? Id { get; set; }
-    public JsonElement? Result { get; set; }
-    public JsonRpcError? Error { get; set; }
-}
+#### 受信メッセージの判定フロー
 
-public class JsonRpcError
-{
-    public int Code { get; set; }
-    public string Message { get; set; } = string.Empty;
-    public JsonElement? Data { get; set; }
-}
+```
+受信 JSON
+  │
+  ├─ "method" あり → リクエストまたは通知
+  │   ├─ "id" あり → OnRequest(method, params) → 応答を自動返送
+  │   └─ "id" なし → OnNotify(method, params)
+  │
+  └─ "method" なし → レスポンス（CallAsync への返信）
+      └─ pending[id] にマッチ → tcs.SetResult
 ```
 
 ### 5.4 アプリケーション層（Layer3）利用例
 
 ```csharp
-// マッチングキーで接続するだけ（PeerChannelの存在を意識しない）
+// マッチングキーで接続するだけ（RoomChannelの存在を意識しない）
 var peer = await RemotePeer.ConnectAsync(
     "550e8400-e29b-41d4-a716-446655440000",
     "your-server.example.com");
 
+// 相手からのリクエストに応答する
+peer.OnRequest = async (method, @params) =>
+{
+    if (method == "Add")
+    {
+        var a = @params["a"].Value<int>();
+        var b = @params["b"].Value<int>();
+        return new { result = a + b };
+    }
+    throw new RpcException(-32601, "Method not found");
+};
+
+// 相手からの一方向通知を受け取る
+peer.OnNotify = (method, @params) =>
+{
+    Console.WriteLine($"通知受信: {method}");
+};
+
 // リモートメソッド呼び出し（レスポンスを待つ）
 var response = await peer.CallAsync("doSomething", new { value = 42 });
 
-// 一方向通知の受信
-peer.OnNotificationReceived += (notification) =>
-{
-    Console.WriteLine($"通知受信: {notification.Result}");
-};
+// 一方向通知を送る（応答なし）
+await peer.NotifyAsync("Log", new { message = "hello" });
 ```
 
 ---

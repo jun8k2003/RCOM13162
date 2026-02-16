@@ -59,14 +59,35 @@ var response = await peer.CallAsync(
     timeout: TimeSpan.FromSeconds(5));
 ```
 
-### 通知の受信
+### 相手からのリクエストに応答する
 
-相手から一方向の通知（Notification）を受け取ることもできます。
+相手が `CallAsync` で呼び出したリクエストを受け取り、結果を返します。
 
 ```csharp
-peer.OnNotificationReceived += (notification) =>
+peer.OnRequest = async (method, @params) =>
 {
-    Console.WriteLine(notification.Result);
+    if (method == "Add")
+    {
+        var a = @params["a"].Value<int>();
+        var b = @params["b"].Value<int>();
+        return new { result = a + b };
+    }
+    throw new RpcException(-32601, "Method not found");
+};
+```
+
+### 一方向通知の送受信
+
+応答を必要としない通知を送受信します。
+
+```csharp
+// 送信（応答なし）
+await peer.NotifyAsync("Log", new { message = "hello" });
+
+// 受信
+peer.OnNotify = (method, @params) =>
+{
+    Console.WriteLine($"通知: {method}");
 };
 ```
 
@@ -128,7 +149,7 @@ var channel = await RoomChannel.CreateAsync(
 
 ```csharp
 // 受信
-channel.OnReceived += (payload) =>
+channel.OnReceived = (payload) =>
 {
     Console.WriteLine(payload);
 };
@@ -159,7 +180,7 @@ var channel = await RoomChannel.CreateAsync(
     host: "broker.example.com",
     mode: ChannelMode.Group);
 
-channel.OnReceived += (payload) =>
+channel.OnReceived = (payload) =>
 {
     // 独自のメッセージ形式を解析して処理
     var msg = JsonConvert.DeserializeObject<MyMessage>(payload);
