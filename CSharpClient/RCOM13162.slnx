@@ -3,4 +3,5 @@
   <Project Path="RCOM.Rpc/RCOM.Rpc.csproj" />
   <Project Path="RCOM.Channel.Tests/RCOM.Channel.Tests.csproj" />
   <Project Path="RCOM.Rpc.Tests/RCOM.Rpc.Tests.csproj" />
+  <Project Path="RCOM.SampleApp/RCOM.SampleApp.csproj" />
 </Solution>
