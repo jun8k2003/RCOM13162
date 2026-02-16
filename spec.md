@@ -792,33 +792,37 @@ GCPのAlways Free枠を使い無料で常時稼働させる。
 
 #### セットアップ手順
 
+無料運用参考サイト
+https://qiita.com/muhi111/items/24b881975f98e0409ef7
+
 ```bash
-# 1. GCP CLIで e2-micro VMを作成
-gcloud compute instances create grpc-broker \
-  --zone=us-central1-a \
-  --machine-type=e2-micro \
-  --image-family=debian-12 \
-  --image-project=debian-cloud \
-  --boot-disk-size=30GB \
-  --tags=grpc-server
+# 1. GCP CLI をインストール（未導入の場合）
+winget install Google.CloudSDK
 
-# 2. ファイアウォールで443番ポートを開放
-gcloud compute firewall-rules create allow-grpc \
-  --allow=tcp:443 \
-  --target-tags=grpc-server
+# 2. インストール確認
+gcloud --version
 
-# 3. SSHで接続
+# 3. GCP CLIで e2-micro VMを作成（無料枠: e2-micro + pd-standard + us-central1）
+gcloud compute instances create grpc-broker --project=grpcbroker --zone=us-central1-a --machine-type=e2-micro --tags=https-server,http-server --create-disk=auto-delete=yes,boot=yes,device-name=grpc-broker,image=projects/debian-cloud/global/images/debian-12-bookworm-v20260210,mode=rw,size=10,type=pd-standard
+
+# 4. ファイアウォールでポートを開放
+gcloud compute firewall-rules create allow-grpc --project=grpcbroker --allow=tcp:443,tcp:5000 --target-tags=http-server
+
+# 5. SSHで接続
 gcloud compute ssh grpc-broker --zone=us-central1-a
 
-# 4. .NETランタイムをインストール
+# 6. .NET 10 ランタイムをインストール（Debian 12 は Microsoft リポジトリの追加が必要）
+wget https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb -O packages-microsoft-prod.deb
+sudo dpkg -i packages-microsoft-prod.deb && rm packages-microsoft-prod.deb
 sudo apt-get update
-sudo apt-get install -y dotnet-runtime-8.0
+sudo apt-get install -y aspnetcore-runtime-10.0
 
-# 5. アプリをビルドして転送（ローカルPCで実行）
+# 7. アプリをビルドして転送（ローカルPCで実行）
 dotnet publish -c Release -o ./publish
-gcloud compute scp --recurse ./publish grpc-broker:~/app --zone=us-central1-a
+gcloud compute ssh grpc-broker --zone=us-central1-a --command="sudo rm -rf ~/app && mkdir ~/app"
+gcloud compute scp --recurse ./publish/* grpc-broker:/home/jun8k/app --zone=us-central1-a
 
-# 6. systemdで自動起動設定
+# 8. systemdで自動起動設定
 sudo nano /etc/systemd/system/grpc-broker.service
 ```
 
@@ -829,8 +833,9 @@ Description=gRPC Broker Service
 After=network.target
 
 [Service]
-WorkingDirectory=/home/user/app
-ExecStart=/usr/bin/dotnet GrpcBroker.dll
+WorkingDirectory=/home/jun8k/app
+Environment=ASPNETCORE_URLS=http://0.0.0.0:5000
+ExecStart=/usr/bin/dotnet /home/jun8k/app/gRpcBroker.dll
 Restart=always
 RestartSec=10
 
