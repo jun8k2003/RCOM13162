@@ -1,4 +1,4 @@
-# gRPC ブローカーシステム 設計仕様書
+# RCOM 設計仕様書
 
 ## 目次
 
@@ -16,12 +16,13 @@
 
 ### 1.1 目的・背景
 
-PC間のプロセス間通信をインターネット越しに実現するシステム。  
+PC間のプロセス間通信をインターネット越しに実現するシステム。
 Windows COM技術のActiveX EXE（DCOM）で実現していたプロセス間通信を、現代的な技術スタックでインターネット越しに再実装することを目的とする。
+また、同一PC内のプロセス間通信（IPC）も名前付きパイプにより同一APIでサポートする。
 
 RCOM は、COM/ActiveX の設計思想に敬意を払いつつ、
-gRPC を用いてリモート環境へ拡張したプロセス間通信フレームワーク。
-RCOM is a remote communication framework inspired by the design philosophy of COM/ActiveX, built on gRPC.
+gRPC および名前付きパイプを用いてリモート・ローカル双方の環境へ拡張したプロセス間通信フレームワーク。
+RCOM is a remote communication framework inspired by the design philosophy of COM/ActiveX, built on gRPC and Named Pipes.
 
 ### 1.2 システムの基本コンセプト
 
@@ -40,8 +41,8 @@ await channel.SendAsync("Hello");
 
 | 観点 | ActiveX EXE (DCOM) | 本システム |
 |---|---|---|
-| 通信範囲 | PC内プロセス間 / LAN内 | インターネット越し |
-| プロトコル | DCOM (RPC over TCP) | gRPC (HTTP/2 over TLS) |
+| 通信範囲 | PC内プロセス間 / LAN内 | インターネット越し + PC内IPC |
+| プロトコル | DCOM (RPC over TCP) | gRPC (HTTP/2 over TLS) / 名前付きパイプ |
 | 接続設定 | レジストリ・COMカタログ | マッチングキー（GUID） |
 | NAT越え | 困難 | 可能（アウトバウンド443番ポート） |
 | クライアントの感覚 | ローカルオブジェクト呼び出し | 同左（ラッパークラスで抽象化） |
@@ -75,14 +76,17 @@ await channel.SendAsync("Hello");
 │  JSON-RPC 2.0フォーマット                 │
 │  IDマッチング／タイムアウト管理            │
 ├─────────────────────────────────────────┤
-│  Layer 1: チャネル層                     │
-│  gRPC双方向ストリーミング                  │
-│  マッチングキーによるペアリング            │
-│  再接続管理                              │
+│  Layer 1: チャネル層（IRoomChannel）      │
+│  ┌────────────────┬───────────────────┐ │
+│  │GrpcRoomChannel │ IpcRoomChannel    │ │
+│  │gRPC双方向       │ 名前付きパイプ     │ │
+│  │ストリーミング    │ PC内IPC           │ │
+│  └────────────────┴───────────────────┘ │
 └─────────────────────────────────────────┘
 ```
 
-各層の責務を明確に分離することで、本番移行時にLayer1のみを差し替えられる設計とする。
+各層の責務を明確に分離し、Layer1のIRoomChannelインターフェースにより、トランスポートを差し替えられる設計とする。
+GrpcRoomChannelはインターネット越しの通信、IpcRoomChannelは同一PC内のプロセス間通信を担当する。
 
 ### 2.3 チャネルモード
 
@@ -134,19 +138,35 @@ Layer2（JSON-RPC 2.0）　：Request/Responseの対管理・タイムアウト
 
 ### 3.1 プロトコルスタック
 
+#### gRPC 経由（GrpcRoomChannel）
+
 ```
 ┌────────────────────────────┐
 │ アプリケーションデータ        │
 ├────────────────────────────┤
 │ JSON-RPC 2.0               │  ← Layer2
 ├────────────────────────────┤
-│ gRPC（Protocol Buffers）    │  ← Layer1
+│ gRPC（Protocol Buffers）    │  ← Layer1 (GrpcRoomChannel)
 ├────────────────────────────┤
 │ HTTP/2                     │  ← キープアライブ・多重化
 ├────────────────────────────┤
 │ TLS                        │  ← 暗号化
 ├────────────────────────────┤
 │ TCP                        │  ← セッション維持
+└────────────────────────────┘
+```
+
+#### IPC 経由（IpcRoomChannel）
+
+```
+┌────────────────────────────┐
+│ アプリケーションデータ        │
+├────────────────────────────┤
+│ JSON-RPC 2.0               │  ← Layer2
+├────────────────────────────┤
+│ 長さプレフィックス + UTF-8   │  ← Layer1 (IpcRoomChannel)
+├────────────────────────────┤
+│ 名前付きパイプ               │  ← OS カーネル IPC
 └────────────────────────────┘
 ```
 
@@ -217,7 +237,7 @@ message Message {
 |---|---|
 | アプリ A / アプリ B | ユーザーのアプリケーションコード |
 | RemotePeer A / B | Layer 2 — JSON-RPC 2.0 の Request/Response 対管理 |
-| RoomChannel A / B | Layer 1 — gRPC 双方向ストリーミングの送受信 |
+| RoomChannel A / B | Layer 1 — IRoomChannel 実装（GrpcRoomChannel / IpcRoomChannel）による送受信 |
 | Broker サーバー | ルーム管理とメッセージ中継 |
 
 #### 接続フェーズ
@@ -234,18 +254,18 @@ sequenceDiagram
 
     Note over AA,AB: 接続フェーズ
 
-    AA->>PA: ConnectAsync(matchingKey, host, port)
-    PA->>CA: CreateAsync(matchingKey, Peer)
+    AA->>CA: GrpcRoomChannel.CreateAsync(matchingKey, host, port)
     CA->>BK: gRPC Connect (matching-key, channel-mode=peer)
     Note right of BK: Room作成, メンバーA登録
-    CA-->>PA: RoomChannel生成完了
+    CA-->>AA: IRoomChannel生成完了
+    AA->>PA: new RemotePeer(channel)
     PA-->>AA: RemotePeer生成完了
 
-    AB->>PB: ConnectAsync(matchingKey, host, port)
-    PB->>CB: CreateAsync(matchingKey, Peer)
+    AB->>CB: GrpcRoomChannel.CreateAsync(matchingKey, host, port)
     CB->>BK: gRPC Connect (matching-key, channel-mode=peer)
     Note right of BK: 同RoomにB登録 (マッチング成立)
-    CB-->>PB: RoomChannel生成完了
+    CB-->>AB: IRoomChannel生成完了
+    AB->>PB: new RemotePeer(channel)
     PB-->>AB: RemotePeer生成完了
 ```
 
@@ -298,6 +318,9 @@ sequenceDiagram
     PA->>CA: Dispose()
     CA->>BK: ストリーム切断
     Note right of BK: メンバーA除去
+    BK-->>CB: ReceiveLoop 終了検知
+    CB->>PB: OnDisconnected
+    PB->>AB: OnPeerLeave（相手が切断）
 
     AB->>PB: Dispose()
     PB->>CB: Dispose()
@@ -537,79 +560,57 @@ public class RedisRoomRegistry : IRoomRegistry { ... }
 - AとBがマッチングキーを共有する方法はこのシステムではサポートしない（アプリケーション側で解決する）
 - マッチングキーはペアリング（シグナリング）に使用し、再接続時にも同じキーで接続する
 
-### 5.2 チャネル層（Layer1）サンプルコード
+### 5.2 チャネル層（Layer1）設計
+
+Layer1はIRoomChannelインターフェースにより、トランスポートを抽象化する。
 
 ```csharp
-public class PeerChannel
+public interface IRoomChannel : IDisposable
 {
-    private readonly string _matchingKey;
-    private readonly GrpcChannel _grpcChannel;
-    private AsyncDuplexStreamingCall<Message, Message>? _call;
-
-    // 受信イベント
-    public Action<string> OnReceived { get; set; }
-
-    private PeerChannel(string matchingKey, string serverUrl)
-    {
-        _matchingKey = matchingKey;
-        _grpcChannel = GrpcChannel.ForAddress(serverUrl);
-    }
-
-    /// <summary>
-    /// マッチングキーで初期化してサーバーに接続する。
-    /// </summary>
-    public static async Task<PeerChannel> CreateAsync(
-        string matchingKey,
-        string serverUrl = "https://your-server.example.com")
-    {
-        var channel = new PeerChannel(matchingKey, serverUrl);
-        await channel.ConnectAsync();
-        return channel;
-    }
-
-    private async Task ConnectAsync()
-    {
-        var client = new Broker.BrokerClient(_grpcChannel);
-
-        // マッチングキーをヘッダーに付与して接続
-        var headers = new Metadata
-        {
-            { "matching-key", _matchingKey }
-        };
-
-        _call = client.Connect(headers);
-
-        // 受信ループをバックグラウンドで開始
-        _ = Task.Run(async () =>
-        {
-            await foreach (var message in _call.ResponseStream.ReadAllAsync())
-            {
-                OnReceived?.Invoke(message.Payload);
-            }
-        });
-    }
-
-    /// <summary>
-    /// ルーム内の全員にメッセージを送信する。
-    /// </summary>
-    public async Task SendAsync(string payload)
-    {
-        if (_call == null) throw new InvalidOperationException("Not connected");
-
-        await _call.RequestStream.WriteAsync(new Message
-        {
-            MatchingKey = _matchingKey,
-            Payload = payload,
-            MessageId = Guid.NewGuid().ToString()
-        });
-    }
+    Action<string> OnReceived { get; set; }
+    Action OnDisconnected { get; set; }
+    Task SendAsync(string payload);
 }
 ```
+
+`OnDisconnected` は、受信ループ（ReceiveLoop）の終了時に発火する。相手の Dispose による正常切断、プロセス終了による異常切断の両方で発火する。
+
+#### GrpcRoomChannel（gRPC実装）
+
+インターネット越しの通信に使用する。Brokerサーバー経由でメッセージを中継する。
+
+```csharp
+// マッチングキーで初期化してサーバーに接続する
+var channel = await GrpcRoomChannel.CreateAsync(
+    matchingKey: "guid-xxxx",
+    host: "broker.example.com",
+    port: 443,
+    mode: ChannelMode.Peer,
+    useTls: true);
+```
+
+#### IpcRoomChannel（名前付きパイプ実装）
+
+同一PC内のプロセス間通信に使用する。サーバー不要で、パイプ名がマッチングキーの役割を果たす。
+長さプレフィックス（4バイト little-endian）+ UTF-8バイト列によるフレーミングプロトコルを使用する。
+
+```csharp
+// サーバー側（先に待機）
+var channel = await IpcRoomChannel.CreateServerAsync(pipeName: "my-pipe");
+
+// クライアント側（後から接続）
+var channel = await IpcRoomChannel.CreateClientAsync(pipeName: "my-pipe");
+```
+
+いずれの実装も `IRoomChannel` を実装しており、Layer2（RemotePeer）から透過的に使用できる。
 
 ### 5.3 RPC層（Layer2）サンプルコード
 
 JSON-RPC 2.0フォーマットによるRequest/Response対管理とタイムアウト制御。
 受信メッセージは `method` フィールドの有無でリクエスト/レスポンスを判別し、`id` フィールドの有無でリクエスト/通知を判別する。
+
+RemotePeerはコンストラクタで初期化済みのIRoomChannelを受け取る（コンストラクタインジェクション）。
+これにより、GrpcRoomChannelでもIpcRoomChannelでも同一のRemotePeerで通信できる。
 
 ```csharp
 public class RemotePeer
@@ -626,10 +627,14 @@ public class RemotePeer
     // 相手からの一方向通知受信ハンドラ（単一デリゲート）
     public Action<string, JToken> OnNotify { get; set; }
 
+    // 相手が切断したときに呼ばれるハンドラ
+    public Action OnPeerLeave { get; set; }
+
     public RemotePeer(IRoomChannel channel)
     {
         _channel = channel;
         _channel.OnReceived = OnReceived;
+        _channel.OnDisconnected = () => OnPeerLeave?.Invoke();
     }
 
     /// <summary>
@@ -744,10 +749,15 @@ public class RemotePeer
 ### 5.4 アプリケーション層（Layer3）利用例
 
 ```csharp
-// マッチングキーで接続するだけ（RoomChannelの存在を意識しない）
-var peer = await RemotePeer.ConnectAsync(
+// gRPC で接続する場合
+var channel = await GrpcRoomChannel.CreateAsync(
     "550e8400-e29b-41d4-a716-446655440000",
     "your-server.example.com");
+var peer = new RemotePeer(channel);
+
+// IPC で接続する場合
+var channel = await IpcRoomChannel.CreateServerAsync("my-pipe");
+var peer = new RemotePeer(channel);
 
 // 相手からのリクエストに応答する
 peer.OnRequest = async (method, @params) =>
@@ -765,6 +775,13 @@ peer.OnRequest = async (method, @params) =>
 peer.OnNotify = (method, @params) =>
 {
     Console.WriteLine($"通知受信: {method}");
+};
+
+// 相手が切断したときの処理
+peer.OnPeerLeave = () =>
+{
+    Console.WriteLine("相手が切断しました");
+    peer.Dispose();
 };
 
 // リモートメソッド呼び出し（レスポンスを待つ）
@@ -924,8 +941,8 @@ builder.Services.AddSingleton<IRoomRegistry, RedisRoomRegistry>();
 将来的に必要になった場合はLayer1とLayer2の間にキュー層（Redis Streams等）を差し込む設計で対応可能。
 
 ```
-現在：Layer1（gRPC）→ Layer2（JSON-RPC 2.0）
-将来：Layer1（gRPC）→ キュー層（Redis Streams）→ Layer2（JSON-RPC 2.0）
+現在：Layer1（GrpcRoomChannel / IpcRoomChannel）→ Layer2（JSON-RPC 2.0）
+将来：Layer1 → キュー層（Redis Streams）→ Layer2（JSON-RPC 2.0）
 ```
 
 ### 7.3 認証・セキュリティの強化
