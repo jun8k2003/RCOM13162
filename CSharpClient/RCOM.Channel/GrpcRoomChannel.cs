@@ -7,10 +7,10 @@ using RCOM.Channel.Proto;
 namespace RCOM.Channel
 {
     /// <summary>
-    /// Layer1: gRPC 双方向ストリーミングによるチャネル層。
+    /// Layer1: gRPC 双方向ストリーミングによるチャネル実装。
     /// マッチングキーを使ってサーバーのルームに接続し、メッセージを送受信する。
     /// </summary>
-    public class RoomChannel : IRoomChannel
+    public class GrpcRoomChannel : IRoomChannel
     {
         private readonly string _matchingKey;
         private readonly ChannelMode _mode;
@@ -23,7 +23,12 @@ namespace RCOM.Channel
         /// </summary>
         public Action<string> OnReceived { get; set; }
 
-        private RoomChannel(string matchingKey, ChannelMode mode, Grpc.Core.Channel grpcChannel)
+        /// <summary>
+        /// 接続が切断されたときに呼ばれるハンドラ。
+        /// </summary>
+        public Action OnDisconnected { get; set; }
+
+        private GrpcRoomChannel(string matchingKey, ChannelMode mode, Grpc.Core.Channel grpcChannel)
         {
             _matchingKey = matchingKey;
             _mode = mode;
@@ -38,7 +43,7 @@ namespace RCOM.Channel
         /// <param name="port">サーバーポート番号</param>
         /// <param name="mode">チャネルモード（Peer: 1:1、Group: ブロードキャスト）</param>
         /// <param name="useTls">TLS を使用するか（本番: true、開発: false）</param>
-        public static async Task<RoomChannel> CreateAsync(
+        public static async Task<GrpcRoomChannel> CreateAsync(
             string matchingKey,
             string host,
             int port = 443,
@@ -50,7 +55,7 @@ namespace RCOM.Channel
                 : ChannelCredentials.Insecure;
 
             var grpcChannel = new Grpc.Core.Channel(host, port, credentials);
-            var channel = new RoomChannel(matchingKey, mode, grpcChannel);
+            var channel = new GrpcRoomChannel(matchingKey, mode, grpcChannel);
             await channel.ConnectAsync();
             return channel;
         }
@@ -93,6 +98,10 @@ namespace RCOM.Channel
             catch (OperationCanceledException)
             {
                 // キャンセルは正常系
+            }
+            finally
+            {
+                OnDisconnected?.Invoke();
             }
         }
 

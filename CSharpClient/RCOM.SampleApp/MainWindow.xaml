@@ -14,18 +14,48 @@
         <!-- 接続設定 -->
         <GroupBox Grid.Row="0" Header="接続設定" Padding="4" Margin="0,0,0,4">
             <StackPanel>
-                <Grid>
+                <!-- トランスポート選択 -->
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                    <TextBlock Text="トランスポート:" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                    <RadioButton x:Name="RbGrpc" Content="gRPC" IsChecked="True" Margin="0,0,12,0"
+                                 Checked="RbTransport_Checked"/>
+                    <RadioButton x:Name="RbIpc" Content="IPC (名前付きパイプ)"
+                                 Checked="RbTransport_Checked"/>
+                </StackPanel>
+
+                <!-- gRPC 設定 -->
+                <Grid x:Name="PnlGrpc">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
                     <TextBlock Grid.Column="0" Text="URL:" VerticalAlignment="Center" Margin="0,0,4,0"/>
-                    <TextBox Grid.Column="1" x:Name="TxtUrl" Text="localhost:50051" Margin="0,0,8,0"/>
+                    <TextBox Grid.Column="1" x:Name="TxtUrl" Text="localhost:5000" Margin="0,0,8,0"/>
                     <TextBlock Grid.Column="2" Text="Key:" VerticalAlignment="Center" Margin="0,0,4,0"/>
-                    <TextBox Grid.Column="3" x:Name="TxtMatchingKey" Text=""/>
+                    <TextBox Grid.Column="3" x:Name="TxtMatchingKey" Text="" Margin="0,0,8,0"/>
+                    <CheckBox Grid.Column="4" x:Name="ChkTls" Content="TLS" VerticalAlignment="Center"/>
                 </Grid>
+
+                <!-- IPC 設定 -->
+                <Grid x:Name="PnlIpc" Visibility="Collapsed">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="パイプ名:" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                    <TextBox Grid.Column="1" x:Name="TxtPipeName" Text="rcom-test" Margin="0,0,8,0"/>
+                    <TextBlock Grid.Column="2" Text="役割:" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                    <StackPanel Grid.Column="3" Orientation="Horizontal">
+                        <RadioButton x:Name="RbIpcServer" Content="Server" IsChecked="True" Margin="0,0,8,0"/>
+                        <RadioButton x:Name="RbIpcClient" Content="Client"/>
+                    </StackPanel>
+                </Grid>
+
                 <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
                     <Button x:Name="BtnConnect" Content="接続" Width="60" Click="BtnConnect_Click" Margin="0,0,4,0"/>
                     <Button x:Name="BtnDisconnect" Content="切断" Width="60" Click="BtnDisconnect_Click" IsEnabled="False" Margin="0,0,8,0"/>

@@ -10,7 +10,7 @@ namespace RCOM.Rpc
 {
     /// <summary>
     /// リモートピアとの 1:1 通信を実現するクラス。
-    /// 内部で RoomChannel（Layer1）を保持し、JSON-RPC 2.0 による Request/Response 対管理を行う。
+    /// 内部で IRoomChannel（Layer1）を保持し、JSON-RPC 2.0 による Request/Response 対管理を行う。
     /// </summary>
     public class RemotePeer : IRemotePeer
     {
@@ -33,31 +33,20 @@ namespace RCOM.Rpc
         public Action<string, JToken> OnNotify { get; set; }
 
         /// <summary>
-        /// IRoomChannel を直接指定して生成する（テスト用）。
+        /// 相手が切断したときに呼ばれるハンドラ。
+        /// 相手の Dispose による正常切断、プロセス終了による異常切断の両方で発火する。
+        /// </summary>
+        public Action OnPeerLeave { get; set; }
+
+        /// <summary>
+        /// 初期化済みの IRoomChannel を指定して生成する。
+        /// GrpcRoomChannel や IpcRoomChannel など任意の実装を注入できる。
         /// </summary>
         public RemotePeer(IRoomChannel channel)
         {
             _channel = channel;
             _channel.OnReceived = OnReceived;
-        }
-
-        /// <summary>
-        /// マッチングキーでサーバーに接続し、RemotePeer を生成する。
-        /// Layer1（RoomChannel）の存在を隠蔽する。
-        /// </summary>
-        /// <param name="matchingKey">ルーム識別子（GUID 文字列）</param>
-        /// <param name="host">サーバーホスト名</param>
-        /// <param name="port">サーバーポート番号</param>
-        /// <param name="useTls">TLS を使用するか（本番: true、開発: false）</param>
-        public static async Task<RemotePeer> ConnectAsync(
-            string matchingKey,
-            string host,
-            int port = 443,
-            bool useTls = true)
-        {
-            var channel = await RoomChannel.CreateAsync(
-                matchingKey, host, port, ChannelMode.Peer, useTls);
-            return new RemotePeer(channel);
+            _channel.OnDisconnected = () => OnPeerLeave?.Invoke();
         }
 
         /// <summary>

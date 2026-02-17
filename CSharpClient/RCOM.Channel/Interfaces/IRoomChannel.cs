@@ -16,6 +16,12 @@ namespace RCOM.Channel
         Action<string> OnReceived { get; set; }
 
         /// <summary>
+        /// 接続が切断されたときに呼ばれるハンドラ。
+        /// 相手の Dispose やプロセス終了など、受信ループの終了時に発火する。
+        /// </summary>
+        Action OnDisconnected { get; set; }
+
+        /// <summary>
         /// ルーム内の全員にメッセージを送信する。
         /// </summary>
         /// <param name="payload">JSON-RPC 2.0 フォーマットの JSON 文字列</param>

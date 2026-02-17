@@ -38,5 +38,11 @@ namespace RCOM.Rpc
         /// 単一デリゲートとして設定する（event ではない）。
         /// </summary>
         Action<string, JToken> OnNotify { get; set; }
+
+        /// <summary>
+        /// 相手が切断したときに呼ばれるハンドラ。
+        /// 相手の Dispose による正常切断、プロセス終了による異常切断の両方で発火する。
+        /// </summary>
+        Action OnPeerLeave { get; set; }
     }
 }
