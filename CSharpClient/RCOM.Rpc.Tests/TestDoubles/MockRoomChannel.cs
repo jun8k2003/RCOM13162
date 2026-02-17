@@ -24,6 +24,11 @@ namespace RCOM.Rpc.Tests.TestDoubles
         public Action<string> OnReceived { get; set; }
 
         /// <summary>
+        /// 接続切断ハンドラ。
+        /// </summary>
+        public Action OnDisconnected { get; set; }
+
+        /// <summary>
         /// SendAsync が呼ばれたときにスローする例外（null なら正常動作）。
         /// </summary>
         public Exception? SendException { get; set; }

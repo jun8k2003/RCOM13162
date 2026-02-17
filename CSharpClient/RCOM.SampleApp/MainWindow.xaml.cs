@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using System.Windows;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using RCOM.Channel;
 using RCOM.Rpc;
 
 namespace RCOM.SampleApp
@@ -30,43 +31,51 @@ namespace RCOM.SampleApp
         }
 
         // ──────────────────────────────
+        // トランスポート切り替え
+        // ──────────────────────────────
+
+        private void RbTransport_Checked(object sender, RoutedEventArgs e)
+        {
+            if (PnlGrpc == null || PnlIpc == null) return;
+
+            if (RbGrpc.IsChecked == true)
+            {
+                PnlGrpc.Visibility = Visibility.Visible;
+                PnlIpc.Visibility = Visibility.Collapsed;
+            }
+            else
+            {
+                PnlGrpc.Visibility = Visibility.Collapsed;
+                PnlIpc.Visibility = Visibility.Visible;
+            }
+        }
+
+        // ──────────────────────────────
         // 接続 / 切断
         // ──────────────────────────────
 
         private async void BtnConnect_Click(object sender, RoutedEventArgs e)
         {
-            var url = TxtUrl.Text.Trim();
-            var matchingKey = TxtMatchingKey.Text.Trim();
-
-            if (string.IsNullOrEmpty(url) || string.IsNullOrEmpty(matchingKey))
-            {
-                MessageBox.Show("URL とマッチングキーを入力してください。", "入力エラー");
-                return;
-            }
-
-            string host;
-            int port;
-            try
-            {
-                var parts = url.Split(':');
-                host = parts[0];
-                port = int.Parse(parts[1]);
-            }
-            catch
-            {
-                MessageBox.Show("URL は host:port 形式で入力してください。", "入力エラー");
-                return;
-            }
-
             SetStatus("接続中...");
             BtnConnect.IsEnabled = false;
-            _logger.Log("CONN", string.Format("接続開始 host={0} port={1} key={2}", host, port, matchingKey));
 
             try
             {
-                _peer = await RemotePeer.ConnectAsync(matchingKey, host, port, useTls: false);
+                IRoomChannel channel;
+
+                if (RbGrpc.IsChecked == true)
+                {
+                    channel = await ConnectGrpcAsync();
+                }
+                else
+                {
+                    channel = await ConnectIpcAsync();
+                }
+
+                _peer = new RemotePeer(channel);
                 _peer.OnRequest = HandleRequest;
                 _peer.OnNotify = HandleNotify;
+                _peer.OnPeerLeave = HandlePeerLeave;
 
                 SetStatus("接続済");
                 BtnDisconnect.IsEnabled = true;
@@ -80,6 +89,51 @@ namespace RCOM.SampleApp
                 BtnConnect.IsEnabled = true;
                 _logger.Log("ERR", string.Format("接続失敗: {0}", ex.Message));
                 MessageBox.Show(ex.Message, "接続エラー");
+            }
+        }
+
+        private async Task<IRoomChannel> ConnectGrpcAsync()
+        {
+            var url = TxtUrl.Text.Trim();
+            var matchingKey = TxtMatchingKey.Text.Trim();
+
+            if (string.IsNullOrEmpty(url) || string.IsNullOrEmpty(matchingKey))
+                throw new InvalidOperationException("URL とマッチングキーを入力してください。");
+
+            string host;
+            int port;
+            try
+            {
+                var parts = url.Split(':');
+                host = parts[0];
+                port = int.Parse(parts[1]);
+            }
+            catch
+            {
+                throw new InvalidOperationException("URL は host:port 形式で入力してください。");
+            }
+
+            var useTls = ChkTls.IsChecked == true;
+            _logger.Log("CONN", string.Format("gRPC 接続開始 host={0} port={1} key={2} tls={3}", host, port, matchingKey, useTls));
+            return await GrpcRoomChannel.CreateAsync(matchingKey, host, port, useTls: useTls);
+        }
+
+        private async Task<IRoomChannel> ConnectIpcAsync()
+        {
+            var pipeName = TxtPipeName.Text.Trim();
+
+            if (string.IsNullOrEmpty(pipeName))
+                throw new InvalidOperationException("パイプ名を入力してください。");
+
+            if (RbIpcServer.IsChecked == true)
+            {
+                _logger.Log("CONN", string.Format("IPC Server 待機開始 pipe={0}", pipeName));
+                return await IpcRoomChannel.CreateServerAsync(pipeName);
+            }
+            else
+            {
+                _logger.Log("CONN", string.Format("IPC Client 接続開始 pipe={0}", pipeName));
+                return await IpcRoomChannel.CreateClientAsync(pipeName);
             }
         }
 
@@ -291,6 +345,19 @@ namespace RCOM.SampleApp
                 LstNotifyReceived.Items.Add(display);
                 LstNotifyReceived.ScrollIntoView(display);
                 _logger.Log("NOTIFY", string.Format("OnNotify \"{0}\" 受信: {1}", method, paramsStr));
+            }));
+        }
+
+        // ──────────────────────────────
+        // OnPeerLeave 受信ハンドラ
+        // ──────────────────────────────
+
+        private void HandlePeerLeave()
+        {
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                _logger.Log("LEAVE", "相手が切断しました");
+                Disconnect();
             }));
         }
 
