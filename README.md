@@ -124,12 +124,9 @@ var peer = new RemotePeer(channel);
 ### IPC で接続（同一 PC 内のプロセス間通信）
 
 ```csharp
-// サーバー側（先に待機する側）
-var channel = await IpcRoomChannel.CreateServerAsync(pipeName: "my-app-pipe");
-var peer = new RemotePeer(channel);
-
-// クライアント側（後から接続する側、別プロセスで実行）
-var channel = await IpcRoomChannel.CreateClientAsync(pipeName: "my-app-pipe");
+// Adaptive Establishment: まず Client 接続を試行し、
+// サーバー不在なら自分が Server となって待機する。
+var channel = await IpcRoomChannel.CreateAdaptiveAsync(pipeName: "my-app-pipe");
 var peer = new RemotePeer(channel);
 ```
 
@@ -262,11 +259,12 @@ var channel = await GrpcRoomChannel.CreateAsync(
 ### IPC で直接接続
 
 ```csharp
-// サーバー側
-var channel = await IpcRoomChannel.CreateServerAsync("my-pipe");
+// Adaptive Establishment（推奨）
+var channel = await IpcRoomChannel.CreateAdaptiveAsync("my-pipe");
 
-// クライアント側
-var channel = await IpcRoomChannel.CreateClientAsync("my-pipe");
+// 役割固定が必要な場合のみ従来 API を使用
+var serverChannel = await IpcRoomChannel.CreateServerAsync("my-pipe");
+var clientChannel = await IpcRoomChannel.CreateClientAsync("my-pipe");
 ```
 
 ### メッセージの送受信

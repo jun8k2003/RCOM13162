@@ -80,6 +80,45 @@ namespace RCOM.Channel
             return channel;
         }
 
+        /// <summary>
+        /// Adaptive Establishment で IPC チャネルを作成する。
+        /// まずクライアントとして接続を試行し、サーバー不在で失敗した場合はサーバーとして待機に切り替える。
+        /// 既に他プロセスがサーバー化済みの場合は、再度クライアント接続を試行する。
+        /// </summary>
+        /// <param name="pipeName">パイプ名（マッチングキー相当）</param>
+        /// <param name="serverName">サーバー名（デフォルト: ローカルマシン "."）</param>
+        /// <param name="initialClientTimeoutMs">最初のクライアント接続タイムアウト（ミリ秒）</param>
+        /// <param name="retryClientTimeoutMs">再試行クライアント接続タイムアウト（ミリ秒）</param>
+        public static async Task<IpcRoomChannel> CreateAdaptiveAsync(
+            string pipeName,
+            string serverName = ".",
+            int initialClientTimeoutMs = 1000,
+            int retryClientTimeoutMs = 5000)
+        {
+            if (string.IsNullOrWhiteSpace(pipeName))
+                throw new ArgumentException("pipeName is required", nameof(pipeName));
+
+            try
+            {
+                return await CreateClientInternalAsync(pipeName, serverName, initialClientTimeoutMs);
+            }
+            catch (TimeoutException)
+            {
+                // サーバー不在想定。サーバー昇格を試みる。
+            }
+
+            try
+            {
+                return await CreateServerAsync(pipeName);
+            }
+            catch (IOException)
+            {
+                // 同時昇格で先行サーバーが確立されたケース。
+                // 再度クライアントとして接続する。
+                return await CreateClientInternalAsync(pipeName, serverName, retryClientTimeoutMs);
+            }
+        }
+
         private async Task ReceiveLoopAsync(CancellationToken ct)
         {
             try
@@ -149,6 +188,34 @@ namespace RCOM.Channel
                 totalRead += read;
             }
             return totalRead;
+        }
+
+        private static async Task<IpcRoomChannel> CreateClientInternalAsync(
+            string pipeName,
+            string serverName,
+            int connectTimeoutMs)
+        {
+            var client = new NamedPipeClientStream(
+                serverName,
+                pipeName,
+                PipeDirection.InOut,
+                PipeOptions.Asynchronous);
+
+            try
+            {
+                await Task.Run(() => client.Connect(connectTimeoutMs));
+
+                var channel = new IpcRoomChannel(client);
+#pragma warning disable CS4014
+                Task.Run(() => channel.ReceiveLoopAsync(channel._cts.Token));
+#pragma warning restore CS4014
+                return channel;
+            }
+            catch
+            {
+                client.Dispose();
+                throw;
+            }
         }
     }
 }

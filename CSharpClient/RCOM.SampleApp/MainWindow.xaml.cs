@@ -125,16 +125,8 @@ namespace RCOM.SampleApp
             if (string.IsNullOrEmpty(pipeName))
                 throw new InvalidOperationException("パイプ名を入力してください。");
 
-            if (RbIpcServer.IsChecked == true)
-            {
-                _logger.Log("CONN", string.Format("IPC Server 待機開始 pipe={0}", pipeName));
-                return await IpcRoomChannel.CreateServerAsync(pipeName);
-            }
-            else
-            {
-                _logger.Log("CONN", string.Format("IPC Client 接続開始 pipe={0}", pipeName));
-                return await IpcRoomChannel.CreateClientAsync(pipeName);
-            }
+            _logger.Log("CONN", string.Format("IPC Adaptive Establishment 開始 pipe={0}", pipeName));
+            return await IpcRoomChannel.CreateAdaptiveAsync(pipeName);
         }
 
         private void BtnDisconnect_Click(object sender, RoutedEventArgs e)
