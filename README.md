@@ -39,7 +39,7 @@ RCOM はトランスポート層の差し替えにより、さまざまな運用
 同一 PC 内の 2 つのプロセスが名前付きパイプで直接通信します。サーバー不要で最もシンプルな構成です。
 
 ```mermaid
-graph LR
+graph TD
     subgraph PC["同一 PC"]
         A["アプリ A<br/>(IpcRoomChannel)"] <-->|名前付きパイプ| B["アプリ B<br/>(IpcRoomChannel)"]
     end
@@ -56,7 +56,7 @@ graph LR
 ```mermaid
 graph LR
     subgraph PC["同一 PC"]
-        A["アプリ A<br/>(GrpcRoomChannel)"] <-->|"http://localhost:5000"| S["gRPC Broker<br/>コンソール実行"]
+         S["gRPC Broker<br/>コンソール実行"]<-->|"http://localhost:5000"|A["アプリ A<br/>(GrpcRoomChannel)"] 
         S <-->|"http://localhost:5000"| B["アプリ B<br/>(GrpcRoomChannel)"]
     end
 
@@ -72,8 +72,10 @@ LAN 内のサーバーマシンで gRPC Broker を Windows サービスまたは
 
 ```mermaid
 graph LR
-    A["コンピュータ A<br/>(GrpcRoomChannel)"] <-->|"http://server:5000<br/>LAN 内通信"| S["gRPC Broker<br/>サービス実行"]
-    S <-->|"http://server:5000<br/>LAN 内通信"| B["コンピュータ B<br/>(GrpcRoomChannel)"]
+    subgraph ローカルネットワーク
+      S["gRPC Broker<br/>サービス実行"]<-->|"http://server:5000<br/>LAN 内通信"|A["コンピュータ A<br/>(GrpcRoomChannel)"]
+      S <-->|"http://server:5000<br/>LAN 内通信"| B["コンピュータ B<br/>(GrpcRoomChannel)"]
+    end
 
     style A fill:#4a9eff,stroke:#2670c2,color:#fff
     style B fill:#4a9eff,stroke:#2670c2,color:#fff
@@ -83,12 +85,29 @@ graph LR
 ### パターン 4: クラウドサービスによるインターネット越しの通信
 
 クラウド（GCP, AWS 等）に gRPC Broker をデプロイし、インターネット越しに通信します。TLS による暗号化で安全に通信できます。
+それぞれの PC は直接通信できない環境（NATの内側など）にあっても、共通のクラウド上の Broker に接続することで通信が可能になります。
 
 ```mermaid
-graph LR
-    A["コンピュータ A<br/>(GrpcRoomChannel)"] <-->|"https://broker:443<br/>TLS 暗号化"| S["gRPC Broker<br/>クラウドサービス"]
-    S <-->|"https://broker:443<br/>TLS 暗号化"| B["コンピュータ B<br/>(GrpcRoomChannel)"]
+graph TD
+    %% ノード定義
+    subgraph クラウド
+      S["☁️ gRPC Broker (Cloud)"]
+    end
+      subgraph ローカルネットワークA
+        A["💻 コンピュータ A"]
+      end
+      subgraph ローカルネットワークB
+        B["💻 コンピュータ B"]
+      end
 
+    %% クラウドから各PCへの接続
+    S <-->|HTTPS / TLS| A
+    S <-->|HTTPS / TLS| B
+
+    %% AとBの間の「越えられない壁」の表現
+    %% 不可視リンクで横並びを強制しつつ、リンクスタイルで点線を装飾
+
+    %% スタイル定義
     style A fill:#4a9eff,stroke:#2670c2,color:#fff
     style B fill:#4a9eff,stroke:#2670c2,color:#fff
     style S fill:#ff6b6b,stroke:#c24242,color:#fff
