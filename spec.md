@@ -595,11 +595,13 @@ var channel = await GrpcRoomChannel.CreateAsync(
 長さプレフィックス（4バイト little-endian）+ UTF-8バイト列によるフレーミングプロトコルを使用する。
 
 ```csharp
-// サーバー側（先に待機）
-var channel = await IpcRoomChannel.CreateServerAsync(pipeName: "my-pipe");
+// Adaptive Establishment（推奨）
+// クライアント接続失敗時にサーバー昇格し、必要に応じて再接続を試行する。
+var channel = await IpcRoomChannel.CreateAdaptiveAsync(pipeName: "my-pipe");
 
-// クライアント側（後から接続）
-var channel = await IpcRoomChannel.CreateClientAsync(pipeName: "my-pipe");
+// 役割固定が必要な場合のみ従来 API を使う。
+var serverChannel = await IpcRoomChannel.CreateServerAsync(pipeName: "my-pipe");
+var clientChannel = await IpcRoomChannel.CreateClientAsync(pipeName: "my-pipe");
 ```
 
 いずれの実装も `IRoomChannel` を実装しており、Layer2（RemotePeer）から透過的に使用できる。
@@ -755,8 +757,8 @@ var channel = await GrpcRoomChannel.CreateAsync(
     "your-server.example.com");
 var peer = new RemotePeer(channel);
 
-// IPC で接続する場合
-var channel = await IpcRoomChannel.CreateServerAsync("my-pipe");
+// IPC で接続する場合（Adaptive Establishment）
+var channel = await IpcRoomChannel.CreateAdaptiveAsync("my-pipe");
 var peer = new RemotePeer(channel);
 
 // 相手からのリクエストに応答する
