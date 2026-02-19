@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Grpc.Core;
@@ -43,16 +44,47 @@ namespace RCOM.Channel
         /// <param name="port">サーバーポート番号</param>
         /// <param name="mode">チャネルモード（Peer: 1:1、Group: ブロードキャスト）</param>
         /// <param name="useTls">TLS を使用するか（本番: true、開発: false）</param>
+        /// <param name="tlsOptions">
+        /// TLS オプション。useTls=true のときのみ有効。
+        /// null の場合はシステム CA ストアを使用する（従来の動作）。
+        /// </param>
         public static async Task<GrpcRoomChannel> CreateAsync(
             string matchingKey,
             string host,
             int port = 443,
             ChannelMode mode = ChannelMode.Peer,
-            bool useTls = true)
+            bool useTls = true,
+            GrpcTlsOptions tlsOptions = null)
         {
-            var credentials = useTls
-                ? new SslCredentials()
-                : ChannelCredentials.Insecure;
+            ChannelCredentials credentials;
+
+            if (!useTls)
+            {
+                credentials = ChannelCredentials.Insecure;
+            }
+            else if (tlsOptions != null && tlsOptions.AllowInvalidCertificate)
+            {
+                // 開発用: 証明書検証をスキップ（TLS 暗号化は維持）
+                credentials = new SslCredentials(null, null, _ => true);
+            }
+            else if (tlsOptions != null && !string.IsNullOrEmpty(tlsOptions.TrustedCertFile))
+            {
+                // サイドロード: 指定した PEM 証明書を信頼アンカーとして使用
+                var baseDir = AppDomain.CurrentDomain.BaseDirectory;
+                var certPath = Path.IsPathRooted(tlsOptions.TrustedCertFile)
+                    ? tlsOptions.TrustedCertFile
+                    : Path.Combine(baseDir, tlsOptions.TrustedCertFile);
+
+                if (!File.Exists(certPath))
+                    throw new FileNotFoundException($"サーバー証明書が見つかりません: {certPath}");
+
+                credentials = new SslCredentials(File.ReadAllText(certPath));
+            }
+            else
+            {
+                // デフォルト: システム CA ストアを使用（従来の動作）
+                credentials = new SslCredentials();
+            }
 
             var grpcChannel = new Grpc.Core.Channel(host, port, credentials);
             var channel = new GrpcRoomChannel(matchingKey, mode, grpcChannel);

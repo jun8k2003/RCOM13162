@@ -1,0 +1,6 @@
+{
+  "Grpc": {
+    "TrustedCertFile": "",
+    "AllowInvalidCertificate": false
+  }
+}

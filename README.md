@@ -369,3 +369,91 @@ CSharpClient/
 - .NET Framework 4.8
 - gRPC (Grpc.Core 2.46.6)
 - Newtonsoft.Json 13.0.3
+
+---
+
+## TLS / 自己署名証明書の設定
+
+### 証明書の生成（OpenSSL）
+
+自己署名証明書を生成するには以下のコマンドを使用します（OpenSSL が必要）。
+
+```bash
+openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 -nodes \
+  -keyout server.key -out server.crt \
+  -subj "/CN=localhost" \
+  -addext "subjectAltName=IP:127.0.0.1,DNS:localhost"
+```
+
+> クラウドや社内サーバーで使用する場合は `/CN` と `subjectAltName` をサーバーのホスト名または IP アドレスに合わせて変更してください。
+
+### サーバー側の設定
+
+1. 生成した `server.crt` と `server.key` を `Server/gRpcBroker/certs/` に配置します。
+2. `Server/gRpcBroker/appsettings.json` の `Tls` セクションを編集します：
+
+```json
+{
+  "Tls": {
+    "Enabled": true,
+    "CertPemFile": "certs/server.crt",
+    "KeyPemFile": "certs/server.key"
+  },
+  "Kestrel": {
+    "Endpoints": {
+      "Grpc": {
+        "Url": "https://0.0.0.0:5000"
+      }
+    }
+  }
+}
+```
+
+設定例は `Server/gRpcBroker/appsettings.tls-sample.json` を参照してください。
+
+TLS を有効にした場合、`dotnet run` での起動は `gRpcBroker-tls` プロファイルを使用します：
+
+```bash
+dotnet run --launch-profile gRpcBroker-tls
+```
+
+### クライアント側の設定（RCOM.SampleApp）
+
+サンプルアプリの実行フォルダに配置された `rcom.json` で TLS 動作を設定します。
+
+**証明書サイドロードモード**（推奨）：
+
+1. サーバーの `server.crt` をクライアントの実行フォルダの `certs/` サブフォルダにコピーします。
+2. `rcom.json` を編集します（`rcom.sample.json` を参考にしてください）：
+
+```json
+{
+  "Grpc": {
+    "TrustedCertFile": "certs/server.crt",
+    "AllowInvalidCertificate": false
+  }
+}
+```
+
+**開発用・証明書検証スキップモード**：
+
+証明書ファイルを配置せずに接続テストする場合に使用します。TLS 暗号化は維持されますが証明書の検証は行われません。**本番環境では使用しないでください。**
+
+```json
+{
+  "Grpc": {
+    "TrustedCertFile": "",
+    "AllowInvalidCertificate": true
+  }
+}
+```
+
+**デフォルト（TLS なし / 従来の動作）**：
+
+`TrustedCertFile` が空で `AllowInvalidCertificate` が `false` の場合（デフォルトの `rcom.json`）は、UI の「TLS」チェックボックスで動作を制御します。サーバーが HTTP で動作している場合はチェックを外して接続してください。
+
+| 設定 | サーバー | クライアントの動作 |
+|---|---|---|
+| `rcom.json` デフォルト（空） | HTTP | UI の TLS チェックボックスで制御 |
+| `TrustedCertFile` 指定 | HTTPS | 指定した証明書で検証 |
+| `AllowInvalidCertificate: true` | HTTPS | 証明書検証をスキップ（開発用） |

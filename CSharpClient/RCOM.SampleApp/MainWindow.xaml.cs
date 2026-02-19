@@ -6,6 +6,7 @@ using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using RCOM.Channel;
 using RCOM.Rpc;
+using RCOM.SampleApp.Config;
 
 namespace RCOM.SampleApp
 {
@@ -13,6 +14,7 @@ namespace RCOM.SampleApp
     {
         private RemotePeer _peer;
         private AppLogger _logger;
+        private RcomConfig _config;
 
         public MainWindow()
         {
@@ -27,6 +29,7 @@ namespace RCOM.SampleApp
                 }));
             });
 
+            _config = RcomConfig.Load();
             _logger.Log("INFO", string.Format("ログファイル: {0}", _logger.LogFilePath));
         }
 
@@ -113,9 +116,28 @@ namespace RCOM.SampleApp
                 throw new InvalidOperationException("URL は host:port 形式で入力してください。");
             }
 
-            var useTls = ChkTls.IsChecked == true;
-            _logger.Log("CONN", string.Format("gRPC 接続開始 host={0} port={1} key={2} tls={3}", host, port, matchingKey, useTls));
-            return await GrpcRoomChannel.CreateAsync(matchingKey, host, port, useTls: useTls);
+            bool useTls;
+            GrpcTlsOptions tlsOpts;
+
+            if (_config.HasTlsConfig)
+            {
+                // rcom.json に TLS 設定あり → config ドリブン
+                useTls  = true;
+                tlsOpts = _config.GrpcTls;
+            }
+            else
+            {
+                // rcom.json が空 → 従来通り ChkTls チェックボックスで制御
+                useTls  = ChkTls.IsChecked == true;
+                tlsOpts = null;
+            }
+
+            _logger.Log("CONN", string.Format(
+                "gRPC 接続開始 host={0} port={1} key={2} tls={3} trustedCert={4} allowInvalid={5}",
+                host, port, matchingKey, useTls,
+                tlsOpts != null ? tlsOpts.TrustedCertFile : "-",
+                tlsOpts != null && tlsOpts.AllowInvalidCertificate));
+            return await GrpcRoomChannel.CreateAsync(matchingKey, host, port, useTls: useTls, tlsOptions: tlsOpts);
         }
 
         private async Task<IRoomChannel> ConnectIpcAsync()

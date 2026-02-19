@@ -7,6 +7,14 @@
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development"
       }
+    },
+    "gRpcBroker-tls": {
+      "commandName": "Project",
+      "dotnetRunMessages": true,
+      "applicationUrl": "https://0.0.0.0:5000",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      }
     }
   }
 }
